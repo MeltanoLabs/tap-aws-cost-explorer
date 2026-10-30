@@ -1,33 +1,151 @@
-[tool.poetry]
-name = "tap-aws-cost-explorer"
-version = "0.0.1"
-description = "`tap-aws-cost-explorer` is a Singer tap for AWSCostExplorer, built with the Meltano SDK for Singer Taps."
-authors = ["Albert Marrero"]
+[build-system]
+requires = [
+    "hatchling>=1,<2",
+    "hatch-vcs>=0.5",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "meltanolabs-tap-aws-cost-explorer"
+dynamic = ["version"]
+description = "Singer tap for AWS Cost Explorer, built with the Meltano Singer SDK."
+readme = "README.md"
+authors = [
+    { name = "Albert Marrero" },
+    { name = "Max", email = "max@meltano.com" },
+]
 keywords = [
     "ELT",
-    "AWSCostExplorer",
+    "AWS",
+    "Cost Explorer",
 ]
-license = "Apache 2.0"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+]
+license = "MIT"
+license-files = [ "LICENSE" ]
+requires-python = ">=3.10"
+dependencies = [
+    "singer-sdk~=0.54.9",
+    "boto3~=1.40",
+    "typing-extensions>=4.5.0; python_version < '3.13'",
+]
 
-[tool.poetry.dependencies]
-python = "<3.10,>=3.6.2"
-requests = "^2.25.1"
-singer-sdk = "^0.3.11"
-boto3 = "^1.18.63"
-
-[tool.poetry.dev-dependencies]
-pytest = "^6.2.5"
-tox = "^3.24.4"
-flake8 = "^3.9.2"
-black = "^21.9b0"
-pydocstyle = "^6.1.1"
-mypy = "^0.910"
-types-requests = "^2.25.8"
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
+[project.scripts]
 # CLI declaration
 tap-aws-cost-explorer = 'tap_aws_cost_explorer.tap:TapAWSCostExplorer.cli'
+
+[dependency-groups]
+dev = [
+    { include-group = "test" },
+]
+test = [
+    "pytest>=9",
+    "pytest-github-actions-annotate-failures>=0.4",
+    "singer-sdk[testing]",
+]
+typing = [
+    "mypy>=2.1",
+    "ty>=0.0.41",
+]
+[tool.hatch.build.targets.wheel]
+packages = [
+    "tap_aws_cost_explorer",
+]
+
+[tool.hatch.version]
+fallback-version = "0.1.0.dev0"
+source = "vcs"
+
+[tool.mypy]
+enable_error_code = [
+    "ignore-without-code",
+    "redundant-expr",
+    "truthy-bool",
+]
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.ty.rules]
+missing-override-decorator = "error"
+unused-type-ignore-comment = "ignore"
+
+[tool.pytest]
+addopts = [
+    "-ra",
+]
+filterwarnings = [
+    "error",
+    "once:No records were available to test:UserWarning",
+    "once:Fields in transformed catalog but not in records:UserWarning",
+    "once:Python 3.* its end of life:FutureWarning",
+]
+log_level = "INFO"
+minversion = "9"
+strict = true
+testpaths = [
+    "tests",
+]
+
+[tool.ruff]
+line-length = 100
+required-version = ">=0.16.0"
+
+[tool.ruff.lint]
+future-annotations = true
+ignore = [
+    "missing-trailing-comma",
+]
+select = ["ALL"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+  "assert",
+  "magic-value-comparison",
+  "undocumented-public-function",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# This configuration can be used to customize tox environments
+[tool.tox]
+requires = [
+    "tox>=4.53",
+    "tox-uv>=1.35",
+]
+env_list = [
+    "typing",
+    { prefix = "3.", start = 10 },
+]
+
+[tool.tox.env_run_base]
+description = "run tests on Python {env_name}"
+runner = "uv-venv-lock-runner"
+pass_env = [
+    "CI",
+    "GITHUB_*",
+    "TAP_AWS_COST_EXPLORER_*",
+]
+dependency_groups = [ "test" ]
+commands = [ [ "pytest", { replace = "posargs", default = [ "tests" ], extend = true } ] ]
+
+[tool.tox.env.typing]
+description = "type checks"
+dependency_groups = [ "test", "typing" ]
+commands = [
+    [ "mypy", { replace = "posargs", default = [ "tap_aws_cost_explorer", "tests" ], extend = true } ],
+    [ "ty", "check", { replace = "posargs", default = [ "tap_aws_cost_explorer", "tests" ], extend = true } ],
+]
