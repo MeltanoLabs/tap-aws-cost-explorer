@@ -1,6 +1,5 @@
 # Secrets and internal config files
-**/.secrets/*
-.secrets/
+config.json
 
 # Ignore meltano internal cache and sqlite systemdb
 
@@ -135,3 +134,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local tap config and output
+.secrets/
+output/

@@ -1,62 +1,107 @@
 # tap-aws-cost-explorer
 
-`tap-aws-cost-explorer` is a Singer tap for AWSCostExplorer.
+`tap-aws-cost-explorer` is a Singer tap for [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/), built with the [Meltano Singer SDK](https://sdk.meltano.com).
 
-Built with the [Meltano Tap SDK](https://sdk.meltano.com) for Singer Taps.
+It extracts daily or monthly AWS costs, grouped by account, service, usage type, region, cost allocation tag or cost category. Run against an AWS Organizations management account, it covers every member account in the organization.
+
+This is the MeltanoLabs variant, forked from [albert-marrero/tap-aws-cost-explorer](https://github.com/albert-marrero/tap-aws-cost-explorer) by Albert Marrero.
 
 ## Installation
 
 ```bash
-pipx install git+https://github.com/albert-marrero/tap-aws-cost-explorer
+uv tool install meltanolabs-tap-aws-cost-explorer
 ```
 
-## Configuration
-A full list of supported settings and capabilities for this
-tap is available by running:
+## Prerequisites
+
+The tap needs AWS credentials that can call:
+
+| Permission | Used by |
+|---|---|
+| `ce:GetCostAndUsage` | Every `cost*` stream |
+| `organizations:ListAccounts` | The `accounts` stream |
+
+To cover every account in an organization, use credentials (or `role_arn`) for the organization's **management account**. Cost Explorer there returns costs for every member account, split out by the `LINKED_ACCOUNT` dimension. Credentials for a member account only return that account's costs, and can't call `organizations:ListAccounts`, so deselect the `accounts` stream.
+
+**Cost Explorer API requests are billed** by AWS, at $0.01 per request at the time of writing. The tap makes one request per page of results per stream, so each selected stream adds to the cost of a run.
+
+## Settings
+
+| Setting | Required | Default | Description |
+|---|---|---|---|
+| `access_key` | | | AWS access key ID. Leave unset to use the default AWS credential chain (environment variables, shared config, or an instance or task role). |
+| `secret_key` | | | AWS secret access key. |
+| `session_token` | | | AWS session token, if the credentials are temporary. |
+| `role_arn` | | | IAM role to assume before calling AWS. |
+| `start_date` | Yes | | First day of cost data to extract. Cost Explorer serves the last 14 months, or 38 months of monthly data if multi-year data is enabled. |
+| `end_date` | | Today | Day to stop at, exclusive, so by default data runs to yesterday. |
+| `lookback_days` | | `3` | Days before the bookmark to extract again on each run. |
+| `granularity` | | `DAILY` | `DAILY` or `MONTHLY`. |
+| `metrics` | | `AmortizedCost`, `UnblendedCost`, `NetUnblendedCost`, `UsageQuantity` | Metrics to extract. Also available: `BlendedCost`, `NetAmortizedCost` and `NormalizedUsageAmount`. |
+| `reports` | | | Extra cost reports; see [Custom reports](#custom-reports). |
+
+A full list of settings and capabilities is available by running:
 
 ```bash
 tap-aws-cost-explorer --about
 ```
 
-### Capabilities
+## Streams
 
-* `sync`
-* `catalog`
-* `state`
-* `discover`
+| Stream | Grouped by | Primary key |
+|---|---|---|
+| `cost` | Nothing: total cost | `time_period_start`, `metric_name` |
+| `cost_by_account_service` | `linked_account`, `service` | `time_period_start`, `linked_account`, `service`, `metric_name` |
+| `cost_by_account_usage_type` | `linked_account`, `usage_type` | `time_period_start`, `linked_account`, `usage_type`, `metric_name` |
+| `cost_by_account_region` | `linked_account`, `region` | `time_period_start`, `linked_account`, `region`, `metric_name` |
+| `cost_by_service_usage_type` | `service`, `usage_type` | `time_period_start`, `service`, `usage_type`, `metric_name` |
+| `accounts` | | `id` |
 
-### Source Authentication and Authorization
+Each `cost*` stream has one row per time period, group and metric:
 
-You will need to [create an IAM user account](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_create.html) in Your AWS Account with [access to Cost Explorer.](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ce-access.html#ce-iam-users)
+| Field | Type | Description |
+|---|---|---|
+| `time_period_start` | date | First day of the period, and the replication key |
+| `time_period_end` | date | Day after the last day of the period |
+| `estimated` | boolean | Whether AWS still considers the amount an estimate |
+| _group columns_ | string | One column per group-by, e.g. `linked_account` and `service` |
+| `metric_name` | string | The metric, e.g. `UnblendedCost` |
+| `amount` | number | The amount |
+| `amount_unit` | string | The unit, e.g. `USD`, or `N/A` for `UsageQuantity` |
 
-After you created the desired IAM user account, you need [access keys](https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys) to make programmatic calls to AWS.
+The `accounts` stream lists the accounts in the organization, with their `id`, `arn`, `email`, `name`, `state`, `status`, `joined_method` and `joined_timestamp`. Join it to `linked_account` to name the accounts in cost reports.
 
-### Configuration
-```json
-{
-    "access_key": "ACCESS_KEY",
-    "secret_key": "SECRET_ACCESS_KEY",
-    "session_token": "SESSION_TOKEN",
-    "start_date": "2020-10-01",
-    "end_date": "2021-09-01",
-    "granularity": "DAILY",
-    "metrics": ["AmortizedCost", "BlendedCost", "NetAmortizedCost", "NetUnblendedCost", "NormalizedUsageAmount", "UnblendedCost", "UsageQuantity"]
-}
+### Custom reports
+
+Cost Explorer can group a query by at most two things, so each report is its own stream. Add a report for any other combination of [dimensions](https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_GetDimensionValues.html), cost allocation tags (`TAG`) or cost categories (`COST_CATEGORY`):
+
+```yaml
+config:
+  reports:
+  - name: cost_by_team
+    group_by:
+    - type: TAG
+      key: team
+    - type: DIMENSION
+      key: SERVICE
+    # Optional: a Cost Explorer filter expression, as in the GetCostAndUsage API.
+    filter:
+      Dimensions:
+        Key: RECORD_TYPE
+        Values: [Usage]
 ```
-A bit of a run down on each of the properties:
-- **access_key**: Your AWS Account Access Key.
-- **secret_key**: Your AWS Account Secret Key.
-- **session_token** (Optional): Your AWS Account Secret Key.
-- **start_date**: The start date for retrieving Amazon Web Services cost. Can only be a maximum of 12 months previously.
-- **end_date** (Optional): The end date for retrieving Amazon Web Services cost, defaults to yesterday.
-- **granularity**: Sets the Amazon Web Services cost granularity to MONTHLY or DAILY , or HOURLY.
-- **metrics**: Which metrics are returned in the query. Valid values are AmortizedCost, BlendedCost, NetAmortizedCost, NetUnblendedCost, NormalizedUsageAmount, UnblendedCost, and UsageQuantity."
+
+Group columns are named after the key in snake case, with tags prefixed `tag_` and cost categories `cost_category_`, so this report has `tag_team` and `service` columns. Costs that aren't tagged or categorized have a null tag or cost category value. A tag must be [activated as a cost allocation tag](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/activating-tags.html) before Cost Explorer can group by it.
+
+## Incremental replication
+
+Every `cost*` stream is incremental on `time_period_start`. Each run starts `lookback_days` before the bookmark, because AWS revises recent amounts as usage is processed and while a month's bill is finalized. Rows read again replace the earlier ones by primary key. With `MONTHLY` granularity, each run starts on the 1st of the month.
+
+To backfill, reset the stream's state and set `start_date` to the first day you need, within the last 14 months.
 
 ## Usage
 
-You can easily run `tap-aws-cost-explorer` by itself or in a pipeline using [Meltano](https://meltano.com/).
-
-### Executing the Tap Directly
+You can run `tap-aws-cost-explorer` by itself or in a pipeline using [Meltano](https://meltano.com/).
 
 ```bash
 tap-aws-cost-explorer --version
@@ -64,67 +109,33 @@ tap-aws-cost-explorer --help
 tap-aws-cost-explorer --config CONFIG --discover > ./catalog.json
 ```
 
-## Developer Resources
+## Developer resources
 
-### Initialize your Development Environment
+### Initialize your development environment
 
 ```bash
-pipx install poetry
-poetry install
+uv sync
 ```
 
-### Create and Run Tests
+### Create and run tests
 
-Create tests within the `tap_aws_cost_explorer/tests` subfolder and
-  then run:
-
-```bash
-poetry run pytest
-```
-
-You can also test the `tap-aws-cost-explorer` CLI interface directly using `poetry run`:
+The tests in `tests/test_streams.py` run against stubbed AWS responses. The standard SDK tests in `tests/test_core.py` call the live API, and run only when `TAP_AWS_COST_EXPLORER_ACCESS_KEY` and `TAP_AWS_COST_EXPLORER_SECRET_KEY` are set.
 
 ```bash
-poetry run tap-aws-cost-explorer --help
+uv run pytest
 ```
 
 ### Testing with [Meltano](https://www.meltano.com)
 
-_**Note:** This tap will work in any Singer environment and does not require Meltano.
-Examples here are for convenience and to streamline end-to-end orchestration scenarios._
-
-Your project comes with a custom `meltano.yml` project file already created. Open the `meltano.yml` and follow any _"TODO"_ items listed in
-the file.
-
-Next, install Meltano (if you haven't already) and any needed plugins:
-
 ```bash
-# Install meltano
-pipx install meltano
-# Initialize meltano within this directory
-cd tap-aws-cost-explorer
+uv tool install meltano
 meltano install
-```
-
-Now you can test and orchestrate using Meltano:
-
-```bash
-# Test invocation:
 meltano invoke tap-aws-cost-explorer --version
-# OR run a test `elt` pipeline:
-meltano elt tap-aws-cost-explorer target-jsonl
+meltano run tap-aws-cost-explorer target-jsonl
 ```
 
-### SDK Dev Guide
-
-See the [dev guide](https://sdk.meltano.com/en/latest/dev_guide.html) for more instructions on how to use the SDK to 
-develop your own taps and targets.
-
-## Contributing
-For major changes, please open an issue first to discuss what you would like to change.
-
-## Support
-If you enjoy this repository, please [star](https://docs.github.com/en/get-started/exploring-projects-on-github/saving-repositories-with-stars) this repository. By starring a repository, it shows appreciation to the repository maintainer for their work. Many of GitHub's repository rankings depend on the number of stars a repository has.
+See the [dev guide](https://sdk.meltano.com/en/latest/dev_guide.html) for more on how to use the SDK to develop taps and targets.
 
 ## License
+
 [MIT](LICENSE)
